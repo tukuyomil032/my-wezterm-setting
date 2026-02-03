@@ -64,6 +64,9 @@ return {
     -- Toggle full screen
     { key = "Enter", mods = "ALT", action = act.ToggleFullScreen },
 
+    -- Alt + backslash: send a literal backslash
+    { key = "raw:93", mods = "ALT", action = act.SendString("\\") },
+    
     -- Copy mode
     -- { key = 'X', mods = 'LEADER', action = act.ActivateKeyTable{ name = 'copy_mode', one_shot =false }, },
     { key = "[", mods = "LEADER", action = act.ActivateCopyMode },
