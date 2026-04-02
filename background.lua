@@ -8,12 +8,14 @@ M.settings = {
   rescan_interval_seconds = 5,
   tick_interval_ms = 16,
   transition_duration_ms = 1800,
-  image_opacity = 0.18,
+  image_opacity = 0.22,
+  enable_crossfade = false,
   adaptive_gradient = true,
+  adaptive_tint_strength = 0.18,
   gradient_angle = 90.0,
   gradient_colors = {
-    "#16303D",
-    "#0A1620",
+    "#101823",
+    "#070B11",
   },
   color_extract_params = {
     num_colors = 3,
@@ -134,12 +136,102 @@ local function pick_random_image(previous)
   return picked
 end
 
-local function hex_to_rgb(hex)
-  if not hex then
+local function coerce_color_input(value)
+  if value == nil then
     return nil
   end
 
-  local value = hex:gsub("#", "")
+  if type(value) == "string" then
+    return value
+  end
+
+  if type(value) == "table" then
+    local srgb_u8 = value.srgb_u8
+    if type(srgb_u8) == "function" then
+      local ok, r, g, b = pcall(srgb_u8, value)
+      if ok and r and g and b then
+        return string.format("#%02X%02X%02X", r, g, b)
+      end
+    end
+
+    if type(value.hex) == "string" then
+      return value.hex
+    end
+
+    if type(value.color) == "string" then
+      return value.color
+    end
+
+    if type(value[1]) == "string" then
+      return value[1]
+    end
+  end
+
+  local as_string = tostring(value)
+  if type(as_string) == "string" then
+    local embedded_hex = as_string:match("#[%x]+")
+    if embedded_hex then
+      return embedded_hex
+    end
+    return as_string
+  end
+
+  return nil
+end
+
+local function extract_dominant_hex_with_magick(image_path)
+  if not image_path or image_path == "" then
+    return nil
+  end
+
+  local command = "magick "
+    .. shell_quote(image_path)
+    .. " -resize 1x1\\! -format \"%[hex:p{0,0}]\" info: 2>/dev/null"
+  local pipe = io.popen(command)
+  if not pipe then
+    return nil
+  end
+
+  local output = pipe:read("*a") or ""
+  pipe:close()
+
+  local hex = output:gsub("%s+", "")
+  if #hex == 8 then
+    hex = hex:sub(1, 6)
+  end
+
+  if #hex ~= 6 or not hex:match("^[%x]+$") then
+    return nil
+  end
+
+  return "#" .. hex
+end
+
+local function hex_to_rgb(hex)
+  local raw = coerce_color_input(hex)
+  if not raw then
+    return nil
+  end
+
+  local rgb_numbers = {}
+  if raw:find("^%s*[sS]?[rR][gG][bB]%(") then
+    for number in raw:gmatch("([%d%.]+)") do
+      table.insert(rgb_numbers, tonumber(number))
+    end
+
+    if #rgb_numbers >= 3 then
+      if raw:find("%%") then
+        return clamp(rgb_numbers[1] * 2.55, 0, 255), clamp(rgb_numbers[2] * 2.55, 0, 255), clamp(rgb_numbers[3] * 2.55, 0, 255)
+      end
+      return clamp(rgb_numbers[1], 0, 255), clamp(rgb_numbers[2], 0, 255), clamp(rgb_numbers[3], 0, 255)
+    end
+  end
+
+  local value = raw:match("#([%x]+)") or raw:match("^%s*([%x]+)%s*$")
+  if not value then
+    return nil
+  end
+
   if #value == 8 then
     value = value:sub(1, 6)
   end
@@ -229,20 +321,26 @@ end
 local function build_adaptive_gradient(dominant_hex)
   local dr, dg, db = hex_to_rgb(dominant_hex)
   if not dr then
-    return copy_gradient(M.settings.gradient_colors)
+    return nil
   end
 
   local h, s, _ = rgb_to_hsl(dr / 255, dg / 255, db / 255)
-  local base_hue = (h + 0.5) % 1.0
-  local secondary_hue = (base_hue + 0.08) % 1.0
-  local saturation = clamp((s * 0.55) + 0.30, 0.30, 0.80)
+  local tint_hue = h
+  local secondary_hue = (tint_hue + 0.03) % 1.0
+  local saturation = clamp((s * 0.20) + 0.05, 0.05, 0.20)
 
-  local r1, g1, b1 = hsl_to_rgb(base_hue, saturation, 0.16)
-  local r2, g2, b2 = hsl_to_rgb(secondary_hue, clamp(saturation * 0.9, 0.25, 0.75), 0.08)
+  local r1, g1, b1 = hsl_to_rgb(tint_hue, saturation, 0.18)
+  local r2, g2, b2 = hsl_to_rgb(secondary_hue, clamp(saturation * 0.80, 0.04, 0.16), 0.09)
+
+  local tint_1 = rgb_to_hex(r1, g1, b1)
+  local tint_2 = rgb_to_hex(r2, g2, b2)
+  local base_1 = M.settings.gradient_colors[1]
+  local base_2 = M.settings.gradient_colors[2]
+  local tint_strength = clamp(M.settings.adaptive_tint_strength or 0.18, 0, 0.45)
 
   return {
-    rgb_to_hex(r1, g1, b1),
-    rgb_to_hex(r2, g2, b2),
+    blend_hex(base_1, tint_1, tint_strength),
+    blend_hex(base_2, tint_2, tint_strength * 0.85),
   }
 end
 
@@ -265,7 +363,16 @@ local function gradient_for_image(image_path)
   local gradient = nil
   if ok and type(colors) == "table" and #colors > 0 then
     gradient = build_adaptive_gradient(colors[1])
-  else
+  end
+
+  if not gradient then
+    local fallback_hex = extract_dominant_hex_with_magick(image_path)
+    if fallback_hex then
+      gradient = build_adaptive_gradient(fallback_hex)
+    end
+  end
+
+  if not gradient then
     gradient = copy_gradient(M.settings.gradient_colors)
   end
 
@@ -420,6 +527,14 @@ function M.tick(window)
   local candidate = pick_random_image(state.current_image)
   if not candidate or candidate == state.current_image then
     state.hold_tick = 0
+    return
+  end
+
+  if not M.settings.enable_crossfade then
+    state.current_image = candidate
+    state.current_gradient = gradient_for_image(candidate)
+    state.hold_tick = 0
+    apply_static_background(window, state.current_image, state.current_gradient)
     return
   end
 

@@ -43,6 +43,10 @@ Even if the user chooses not to run the commit command, continue implementation 
 
 The "question" here refers to selection-style planning questions, not plain text questions.
 
+Whenever asking selection-style questions about next actions or commit execution, always include both:
+1. predefined options relevant to the current phase
+2. a custom write-in option (for example, `Other (write your own)`) with freeform input enabled so the user can state their intent verbatim
+
 Commit command format:
 `git commit -m "message" -m "message" -m "message"`
 
