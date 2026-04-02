@@ -1,0 +1,5 @@
+[color "status"]
+	added = red
+	changed = yellow blink
+	untracked = yellow reverse
+	deleted = magenta
