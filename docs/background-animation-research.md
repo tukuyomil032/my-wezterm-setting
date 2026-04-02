@@ -4,6 +4,7 @@
 この設定は、以下を同時に満たすことを目的にしている。
 
 - 画像フォルダからランダムスライドショーを行う
+- `mp4` / `mov` を背景動画として再生する
 - 文字可読性を保つため、背景にグラデーションレイヤーを重ねる
 - 画像ごとに色味を少し適応させる
 - WezTerm 起動後に追加した画像も取り込む
@@ -40,10 +41,14 @@
   - プリセット選択、画像一覧取得、再スキャン、ソース切替
 - `src/background/gradient_manager.lua`
   - 画像色抽出と適応グラデーション生成、色変換、キャッシュ
+- `src/background/video_manager.lua`
+  - `ffmpeg` で動画をフレーム化し、再生用キャッシュを管理
 - `src/background/layers.lua`
   - 背景レイヤー構築とイージング
 - `scripts/switch-background-preset.sh`
   - CLI からプリセット切替を行う補助スクリプト
+- `scripts/configure-background-video.sh`
+  - 動画 FPS/画質プリセットを対話形式で変更する補助スクリプト
 
 ## 3. 背景フォルダの作り方
 `~/.config/wezterm/` 直下に、任意のプリセットディレクトリを作る。
@@ -54,7 +59,12 @@
 - `preset-2`
 - `preset-3`
 
-各ディレクトリに `png/jpg/jpeg` を置く。
+各ディレクトリに `png/jpg/jpeg/mp4/mov` を置く。
+
+補足:
+
+- `mp4/mov` は WezTerm が直接動画描画するのではなく、`ffmpeg` によるフレーム抽出で再生する
+- 抽出フレームは `video_cache_dir` に保存され、同じ動画は再利用される
 
 ## 4. 実際の使い方
 
@@ -79,7 +89,22 @@
 ~/.config/wezterm/scripts/switch-background-preset.sh /Users/you/Pictures/wallpapers/anime
 ```
 
-### 4.3 セレクタファイルを直接書き換える
+動画も同じ運用で、`preset-*` に `mp4/mov` を置いてそのソースへ切り替えるだけで再生される。
+
+### 4.3 動画のFPS/画質を対話形式で変更する
+
+```bash
+~/.config/wezterm/scripts/configure-background-video.sh
+```
+
+選択できるプリセット:
+
+- FPS: `30` または `60`
+- 画質: `Original` / `1440p` / `1080p` / `720p`
+
+このスクリプトは `~/.config/wezterm/.wezterm-video-settings` を更新する。
+
+### 4.4 セレクタファイルを直接書き換える
 内部的には以下ファイルの内容で参照先を決めている。
 
 - `~/.config/wezterm/.wezterm-background-preset`
@@ -97,8 +122,15 @@ printf '%s\n' 'preset-1' > ~/.config/wezterm/.wezterm-background-preset
   - コマンドパレットの `Background: Force source rescan now` を実行
   - もしくは設定再読込 (`Ctrl+Shift+R`)
 
-## 6. 調整ポイント
-背景挙動の主要設定は `src/background.lua` の `M.settings` で管理する。
+  ## 6. 動画再生の仕様
+
+  - 動画ファイル (`mp4` / `mov`) が選ばれた場合、先頭フレームから末尾フレームまで順番に表示する
+  - 末尾まで再生しきったら、次のメディア (静止画または動画) へ切り替える
+  - 動画再生中は、途中でスライドショー間隔による打ち切りは行わない
+  - `ffmpeg` が見つからない場合、動画はスキップされる
+
+  ## 7. 調整ポイント
+  背景挙動の主要設定は `src/background.lua` の `M.settings` で管理する。
 
 主な項目:
 
@@ -114,32 +146,44 @@ printf '%s\n' 'preset-1' > ~/.config/wezterm/.wezterm-background-preset
   - `false` なら即時切替
 - `image_opacity`
   - 画像レイヤー不透明度
+- `enable_video_playback`
+  - `mp4/mov` 再生の有効/無効
+- `video_extract_fps`
+  - 抽出フレームレート
+- `video_max_width`
+  - 抽出フレーム最大幅 (`-2` で縦横比維持)
+- `video_cache_dir`
+  - 抽出フレームのキャッシュ先
 - `adaptive_gradient`
   - 画像色適応の有効/無効
 - `adaptive_tint_strength`
   - 適応色の強さ
 
-## 7. 既定ソースの考え方
+## 8. 既定ソースの考え方
 
 - 優先は `preset_selector_file` で指定されたソース
-- そのソースに画像が無ければ `legacy_image_dir` (`background-img`) をフォールバック
-- それでも画像が無ければ `fallback_image` (設定時のみ) を使用
+- そのソースにメディアが無ければ `legacy_image_dir` (`background-img`) をフォールバック
+- それでもメディアが無ければ `fallback_image` (設定時のみ) を使用
 
-## 8. トラブルシュート
+## 9. トラブルシュート
 
-### 8.1 画像を追加したのに変わらない
+### 9.1 画像/動画を追加したのに変わらない
 - 追加先が選択中プリセットと一致しているか確認
 - コマンドパレットで `Background: Force source rescan now` を実行
 
-### 8.2 切り替え時にエラーが出る
+### 9.2 切り替え時にエラーが出る
 - 入力したプリセット名/絶対パスのディレクトリ実在を確認
 - `scripts/switch-background-preset.sh` を使うと存在チェック付きで設定可能
 
-### 8.3 色味が強すぎる
+### 9.3 動画が再生されない
+- `ffmpeg` が `PATH` から参照可能か確認
+- `video_extract_fps` が極端に高すぎないか確認
+
+### 9.4 色味が強すぎる
 - `src/background.lua` の `adaptive_tint_strength` を下げる
 - `image_opacity` を下げる
 
-## 9. WezTerm API 的な前提
+## 10. WezTerm API 的な前提
 
 - 背景は `background` レイヤー合成で実現
 - 実行時更新は `update-status` と `window:set_config_overrides(...)` を利用
@@ -147,7 +191,7 @@ printf '%s\n' 'preset-1' > ~/.config/wezterm/.wezterm-background-preset
 
 CSS ベースのアニメーションは WezTerm の実行モデル上は直接利用できないため、Lua + WezTerm API で制御する方針としている。
 
-## 10. 操作フロー図
+## 11. 操作フロー図
 
 ```mermaid
 flowchart TD
@@ -161,18 +205,21 @@ flowchart TD
   E --> F
 
   F --> G[source_manager.refresh]
-  G --> H{画像あり?}
+  G --> H{メディアあり?}
   H -->|Yes| I[選択ソースを採用]
   H -->|No| J[legacy background-img を試行]
-  J --> K{画像あり?}
+  J --> K{メディアあり?}
   K -->|Yes| L[legacy を採用]
   K -->|No| M[fallback_image を試行]
 
-  I --> N[gradient_manager で色抽出]
+  I --> N{動画?}
   L --> N
-  M --> N
+  M --> O[gradient_manager で色抽出]
+  N -->|Yes| P[video_manager でフレーム化]
+  N -->|No| O
+  P --> O
 
-  N --> O[background.tick]
-  O --> P[window:set_config_overrides]
-  P --> Q[背景反映完了]
+  O --> Q[background.tick]
+  Q --> R[window:set_config_overrides]
+  R --> S[背景反映完了]
 ```
