@@ -39,6 +39,15 @@ luac.out
 *.x86_64
 *.hex
 
-background-img/*
+# background imgs
+*.png
+*.jpg
+*.jpeg
+
+# other
 docs/*
+background-img/*
+preset-1/*
+preset-2/*
+preset-3/*
 !docs/background-animation-research.md

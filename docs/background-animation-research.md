@@ -1,105 +1,178 @@
-# WezTerm 背景アニメーション調査
+# WezTerm 背景スライドショー 詳細ガイド
 
-## 背景
-依頼内容:
-- 背景画像ごとにグラデーション色を適応させたい
-- WezTerm 起動後に追加した画像も対象にしたい
-- もっと滑らかな切り替えにしたい
-- CSS / 他言語 / ライブラリで高度なアニメーションが可能か知りたい
+## 1. 目的
+この設定は、以下を同時に満たすことを目的にしている。
 
-## WezTerm が公式にサポートしていること
+- 画像フォルダからランダムスライドショーを行う
+- 文字可読性を保つため、背景にグラデーションレイヤーを重ねる
+- 画像ごとに色味を少し適応させる
+- WezTerm 起動後に追加した画像も取り込む
+- コマンドパレットやスクリプトで背景ソースをすぐ切り替える
 
-1. `background` によるマルチレイヤー背景
-- 背景ソースは file / gradient / color を利用できる
-- レイヤーは順に合成されるため、2枚画像と不透明度制御でクロスフェード相当を表現可能
-- 参照: https://wezterm.org/config/lua/config/background.html
+## 2. 現在の構成 (分割後)
+設定本体は `src/` 配下に集約し、ルートには互換ラッパーのみを置く構成にした。
 
-2. イベント + override による実行時更新
-- `status_update_interval` で定期更新間隔を制御できる
-- `window:set_config_overrides(...)` でウィンドウ単位の見た目を動的変更できる
-- 参照: https://wezterm.org/config/lua/config/status_update_interval.html
-- 参照: https://wezterm.org/config/lua/window/set_config_overrides.html
+- `wezterm.lua`
+  - 互換エントリ。`src/wezterm.lua` を読み込むだけ
+- `keybinds.lua`
+  - 互換エントリ。`src/keybinds.lua` を読み込むだけ
+- `background.lua`
+  - 互換エントリ。`src/background.lua` を読み込むだけ
+- `src/wezterm.lua`
+  - WezTerm 全体設定の composition root
+- `src/wezterm/base_config.lua`
+  - フォント/色/ウィンドウ/タブなど静的設定の適用
+- `src/wezterm/tab_title.lua`
+  - タブタイトル描画イベント (`format-tab-title`)
+- `src/wezterm/background_events.lua`
+  - 背景切替コマンドパレットと `update-status` イベント
+- `src/keybinds.lua`
+  - キーバインド関連の集約エントリ
+- `src/keybinds/keys.lua`
+  - 通常キー割り当て定義
+- `src/keybinds/key_tables.lua`
+  - key table 定義 (`resize_pane`, `activate_pane`, `copy_mode`)
+- `src/background.lua`
+  - 背景機能の公開 API と tick 制御本体
+- `src/background/utils.lua`
+  - clamp/trim/shell_quote など共通ユーティリティ
+- `src/background/source_manager.lua`
+  - プリセット選択、画像一覧取得、再スキャン、ソース切替
+- `src/background/gradient_manager.lua`
+  - 画像色抽出と適応グラデーション生成、色変換、キャッシュ
+- `src/background/layers.lua`
+  - 背景レイヤー構築とイージング
+- `scripts/switch-background-preset.sh`
+  - CLI からプリセット切替を行う補助スクリプト
 
-3. `update-right-status` は非推奨で `update-status` が推奨
-- 参照: https://wezterm.org/config/lua/window-events/update-right-status.html
+## 3. 背景フォルダの作り方
+`~/.config/wezterm/` 直下に、任意のプリセットディレクトリを作る。
 
-4. 画像色抽出APIが標準で存在
-- `wezterm.color.extract_colors_from_image(...)` で代表色抽出が可能
-- 大きい画像ではコストがかかるが、公式でキャッシュされる前提の機能
-- 参照: https://wezterm.org/config/lua/wezterm.color/extract_colors_from_image.html
+例:
 
-## CSS / 他言語 / ライブラリの可否
+- `preset-1`
+- `preset-2`
+- `preset-3`
 
-### CSS
-- 非対応
-- WezTerm は Web ランタイムではないため、DOM/CSS アニメーション機構は使えない
+各ディレクトリに `png/jpg/jpeg` を置く。
 
-### Lua ライブラリ
-- 数学処理、イージング、状態管理の補助には使える
-- ただしレンダラ自体の能力を CSS 風に拡張することはできない
-- 最終的な描画可能範囲は WezTerm の背景レイヤー機能に依存する
+## 4. 実際の使い方
 
-### 他言語
-- Lua から外部ツールを呼び出して前処理することは可能
-- ただし、シェーダー級の高度な遷移やピクセル単位効果は、実質的に WezTerm 本体(Rust)改修が必要
+### 4.1 コマンドパレットから切り替える (最も簡単)
+1. WezTerm でコマンドパレットを開く
+   - 既存設定では `Cmd+P` または `Ctrl+Shift+P`
+2. `Background:` で検索する
+3. 次のいずれかを実行する
+   - `Background: Use preset-1` などの候補を選ぶ
+   - `Background: Enter source name or absolute path` で手入力
+   - `Background: Force source rescan now` で即時再スキャン
 
-## 実用的な提案
+### 4.2 シェルスクリプトで切り替える
 
-### Tier 1 (推奨)
-Lua + WezTerm 標準APIだけで構成
-- `extract_colors_from_image` で適応グラデーション
-- 定期再スキャンで起動後追加画像を反映
-- 高頻度 tick + イージング付きクロスフェード
+```bash
+~/.config/wezterm/scripts/switch-background-preset.sh preset-2
+```
 
-利点:
-- stock WezTerm のまま運用できる
-- 設定として持ち運びやすい
-- 保守コストが低い
+絶対パスの画像ディレクトリも指定できる。
 
-弱点:
-- 完全な CSS アニメーションエンジン相当にはならない
+```bash
+~/.config/wezterm/scripts/switch-background-preset.sh /Users/you/Pictures/wallpapers/anime
+```
 
-### Tier 2
-外部でフレーム生成し、WezTerm 側で差し替える
+### 4.3 セレクタファイルを直接書き換える
+内部的には以下ファイルの内容で参照先を決めている。
 
-利点:
-- 表現力は上がる
+- `~/.config/wezterm/.wezterm-background-preset`
 
-弱点:
-- I/O と CPU 負荷が高い
-- 構成が複雑化する
+例:
 
-### Tier 3
-WezTerm を独自ビルド(Rust改修)
+```bash
+printf '%s\n' 'preset-1' > ~/.config/wezterm/.wezterm-background-preset
+```
 
-利点:
-- 表現の自由度が最大
+## 5. 反映タイミング
 
-弱点:
-- 開発・保守コストが最も高い
+- 通常は `rescan_interval_seconds` 間隔で自動反映
+- 即時反映したい場合は:
+  - コマンドパレットの `Background: Force source rescan now` を実行
+  - もしくは設定再読込 (`Ctrl+Shift+R`)
 
-## このプロジェクトへの提案
+## 6. 調整ポイント
+背景挙動の主要設定は `src/background.lua` の `M.settings` で管理する。
 
-1. まず Tier 1 を標準路線として採用(今回の更新で実装済み)
-2. 性能に余裕があればシネマティック方向へ調整
-- `tick_interval_ms` を小さく
-- `transition_duration_ms` を長く
-- `rescan_interval_seconds` は短めだが過剰にしない
-3. クロスフェード以上の表現が必要なら Tier 2 か Tier 3 へ移行
+主な項目:
 
-## 推奨チューニング
+- `slideshow_interval_seconds`
+  - 画像切替までの待機秒数
+- `rescan_interval_seconds`
+  - フォルダ再スキャン間隔
+- `tick_interval_ms`
+  - 内部更新粒度
+- `transition_duration_ms`
+  - クロスフェード時間 (有効時)
+- `enable_crossfade`
+  - `false` なら即時切替
+- `image_opacity`
+  - 画像レイヤー不透明度
+- `adaptive_gradient`
+  - 画像色適応の有効/無効
+- `adaptive_tint_strength`
+  - 適応色の強さ
 
-### バランス重視
-- `tick_interval_ms = 33`
-- `transition_duration_ms = 1400`
-- `slideshow_interval_seconds = 20`
+## 7. 既定ソースの考え方
 
-### より滑らか
-- `tick_interval_ms = 16`
-- `transition_duration_ms = 1800`
-- `slideshow_interval_seconds = 18`
+- 優先は `preset_selector_file` で指定されたソース
+- そのソースに画像が無ければ `legacy_image_dir` (`background-img`) をフォールバック
+- それでも画像が無ければ `fallback_image` (設定時のみ) を使用
 
-### 低負荷
-- `tick_interval_ms = 50`
-- `transition_duration_ms = 1000`
-- `slideshow_interval_seconds = 22`
+## 8. トラブルシュート
+
+### 8.1 画像を追加したのに変わらない
+- 追加先が選択中プリセットと一致しているか確認
+- コマンドパレットで `Background: Force source rescan now` を実行
+
+### 8.2 切り替え時にエラーが出る
+- 入力したプリセット名/絶対パスのディレクトリ実在を確認
+- `scripts/switch-background-preset.sh` を使うと存在チェック付きで設定可能
+
+### 8.3 色味が強すぎる
+- `src/background.lua` の `adaptive_tint_strength` を下げる
+- `image_opacity` を下げる
+
+## 9. WezTerm API 的な前提
+
+- 背景は `background` レイヤー合成で実現
+- 実行時更新は `update-status` と `window:set_config_overrides(...)` を利用
+- 画像色抽出は `wezterm.color.extract_colors_from_image(...)` を利用
+
+CSS ベースのアニメーションは WezTerm の実行モデル上は直接利用できないため、Lua + WezTerm API で制御する方針としている。
+
+## 10. 操作フロー図
+
+```mermaid
+flowchart TD
+  A[ユーザー操作開始] --> B{切替方法}
+  B -->|コマンドパレット| C[Background: Use ...]
+  B -->|コマンドパレット| D[Background: Enter source name/path]
+  B -->|CLI| E[switch-background-preset.sh 実行]
+
+  C --> F[.wezterm-background-preset 更新]
+  D --> F
+  E --> F
+
+  F --> G[source_manager.refresh]
+  G --> H{画像あり?}
+  H -->|Yes| I[選択ソースを採用]
+  H -->|No| J[legacy background-img を試行]
+  J --> K{画像あり?}
+  K -->|Yes| L[legacy を採用]
+  K -->|No| M[fallback_image を試行]
+
+  I --> N[gradient_manager で色抽出]
+  L --> N
+  M --> N
+
+  N --> O[background.tick]
+  O --> P[window:set_config_overrides]
+  P --> Q[背景反映完了]
+```
