@@ -3,7 +3,6 @@ local utils = require("src.background.utils")
 local layers = require("src.background.layers")
 local SourceManager = require("src.background.source_manager")
 local GradientManager = require("src.background.gradient_manager")
-local VideoManager = require("src.background.video_manager")
 
 local M = {}
 
@@ -13,7 +12,7 @@ M.settings = {
   -- Write target preset name here to switch source at runtime.
   preset_selector_file = wezterm.config_dir .. "/.wezterm-background-preset",
   default_preset = "preset-1",
-  -- Backward compatibility: used only if selected source has no media.
+  -- Backward compatibility: used only if selected preset has no images.
   legacy_image_dir = wezterm.config_dir .. "/background-img",
 
   slideshow_interval_seconds = 18,
@@ -40,14 +39,7 @@ M.settings = {
     fuzziness = 6,
   },
 
-  -- Video playback (frame extraction with ffmpeg)
-  enable_video_playback = true,
-  video_extract_fps = 30,
-  video_max_width = 1920,
-  video_cache_dir = wezterm.config_dir .. "/.video-frame-cache",
-  video_settings_file = wezterm.config_dir .. "/.wezterm-video-settings",
-
-  -- Optional fallback if no media is found in selected source.
+  -- Optional fallback if no images are found in selected source.
   fallback_image = nil,
 }
 
@@ -56,7 +48,6 @@ local FADE_TICKS = utils.to_tick_count(M.settings.transition_duration_ms, M.sett
 
 local source_manager = SourceManager.new(wezterm, M.settings)
 local gradient_manager = GradientManager.new(wezterm, M.settings)
-local video_manager = VideoManager.new(wezterm, M.settings)
 
 local state_by_window = {}
 
@@ -66,66 +57,16 @@ local function build_layers(current_image, current_opacity, next_image, next_opa
   return layers.build_layers(M.settings, current_image, current_opacity, next_image, next_opacity, gradient_colors)
 end
 
-local function build_state_from_item(item)
-  local state = {
-    current_item = item,
-    current_image = nil,
-    current_gradient = utils.copy_gradient(M.settings.gradient_colors),
-    next_item = nil,
+local function make_state(previous_image)
+  local current_image = source_manager:pick_random_image(previous_image)
+  return {
+    current_image = current_image,
+    current_gradient = gradient_manager:gradient_for_image(current_image),
     next_image = nil,
     next_gradient = nil,
     hold_tick = 0,
     fade_tick = 0,
-    video = nil,
   }
-
-  if not item then
-    return state
-  end
-
-  if item.kind == "video" then
-    local prepared, err = video_manager:prepare(item.path)
-    if not prepared then
-      wezterm.log_warn("Video skipped: " .. item.path .. " (" .. (err or "unknown error") .. ")")
-      return nil
-    end
-
-    local first_frame = prepared.frame_paths[1]
-    state.current_image = first_frame
-    state.current_gradient = gradient_manager:gradient_for_image(first_frame)
-    state.video = {
-      frame_paths = prepared.frame_paths,
-      frame_index = 1,
-      frame_ticks = prepared.frame_ticks,
-      tick = 0,
-    }
-    return state
-  end
-
-  state.current_image = item.path
-  state.current_gradient = gradient_manager:gradient_for_image(item.path)
-  return state
-end
-
-local function make_state(previous_item)
-  local attempts = math.max(1, source_manager:item_count())
-  local previous = previous_item
-
-  for _ = 1, attempts do
-    local candidate = source_manager:pick_random_item(previous)
-    if not candidate then
-      break
-    end
-
-    local built = build_state_from_item(candidate)
-    if built then
-      return built
-    end
-
-    previous = candidate
-  end
-
-  return build_state_from_item(nil)
 end
 
 local function apply_static_background(window, image_path, gradient)
@@ -172,8 +113,9 @@ end
 
 function M.get_initial_background()
   source_manager:refresh(true)
-  local initial_state = make_state(nil)
-  return build_layers(initial_state.current_image, M.settings.image_opacity, nil, 0, initial_state.current_gradient)
+  local initial_image = source_manager:pick_random_image(nil)
+  local initial_gradient = gradient_manager:gradient_for_image(initial_image)
+  return build_layers(initial_image, M.settings.image_opacity, nil, 0, initial_gradient)
 end
 
 function M.tick(window)
@@ -192,31 +134,16 @@ function M.tick(window)
     return
   end
 
-  if source_changed or (state.current_item and not source_manager:contains_item(state.current_item)) then
-    local refreshed = make_state(state.current_item)
-    state_by_window[id] = refreshed
-    apply_static_background(window, refreshed.current_image, refreshed.current_gradient)
-    return
-  end
-
-  if state.video then
-    state.video.tick = state.video.tick + 1
-    if state.video.tick < state.video.frame_ticks then
-      return
-    end
-
-    state.video.tick = 0
-
-    if state.video.frame_index < #state.video.frame_paths then
-      state.video.frame_index = state.video.frame_index + 1
-      state.current_image = state.video.frame_paths[state.video.frame_index]
-      apply_static_background(window, state.current_image, state.current_gradient)
-      return
-    end
-
-    local refreshed = make_state(state.current_item)
-    state_by_window[id] = refreshed
-    apply_static_background(window, refreshed.current_image, refreshed.current_gradient)
+  if source_changed or (state.current_image and not source_manager:contains_image(state.current_image)) then
+    local previous = state.current_image
+    local refreshed = make_state(previous)
+    state.current_image = refreshed.current_image
+    state.current_gradient = refreshed.current_gradient
+    state.next_image = nil
+    state.next_gradient = nil
+    state.hold_tick = 0
+    state.fade_tick = 0
+    apply_static_background(window, state.current_image, state.current_gradient)
     return
   end
 
@@ -233,10 +160,8 @@ function M.tick(window)
     )
 
     if progress >= 1 then
-      state.current_item = state.next_item
       state.current_image = state.next_image
       state.current_gradient = utils.copy_gradient(state.next_gradient)
-      state.next_item = nil
       state.next_image = nil
       state.next_gradient = nil
       state.fade_tick = 0
@@ -251,27 +176,22 @@ function M.tick(window)
     return
   end
 
-  local candidate = source_manager:pick_random_item(state.current_item)
-  if not candidate or (state.current_item and candidate.key == state.current_item.key) then
+  local candidate = source_manager:pick_random_image(state.current_image)
+  if not candidate or candidate == state.current_image then
     state.hold_tick = 0
     return
   end
 
-  local candidate_state = build_state_from_item(candidate)
-  if not candidate_state then
+  if not M.settings.enable_crossfade then
+    state.current_image = candidate
+    state.current_gradient = gradient_manager:gradient_for_image(candidate)
     state.hold_tick = 0
+    apply_static_background(window, state.current_image, state.current_gradient)
     return
   end
 
-  if not M.settings.enable_crossfade or candidate.kind == "video" then
-    state_by_window[id] = candidate_state
-    apply_static_background(window, candidate_state.current_image, candidate_state.current_gradient)
-    return
-  end
-
-  state.next_item = candidate
-  state.next_image = candidate_state.current_image
-  state.next_gradient = candidate_state.current_gradient
+  state.next_image = candidate
+  state.next_gradient = gradient_manager:gradient_for_image(candidate)
   state.fade_tick = 0
   apply_fade_background(
     window,
